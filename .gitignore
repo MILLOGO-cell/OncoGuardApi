@@ -26,6 +26,8 @@ certs/
 *.swp
 *.swo
 
+alembic/
+
 # IDEs et éditeurs (exemples pour VSCode, PyCharm...)
 .vscode/
 .idea/
