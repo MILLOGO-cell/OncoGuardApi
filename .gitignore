@@ -1,0 +1,47 @@
+# Environnement virtuel Python
+venv/
+env/
+.venv/
+
+# Fichiers Python compilés
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Dossier contenant les certificats SSL/TLS (privés !)  
+certs/
+
+# Fichier de configuration des variables d'environnement (contient secrets)
+.env
+
+# Base de données SQLite locale (fichier binaire)
+*.sqlite3
+*.db
+
+# Logs, fichiers temporaires, caches
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# IDEs et éditeurs (exemples pour VSCode, PyCharm...)
+.vscode/
+.idea/
+*.iml
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Fichiers spécifiques aux systèmes d'exploitation
+.DS_Store
+Thumbs.db
+
+certs/
+.env
+.env.*
+*.db
