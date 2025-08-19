@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 text
 
 # OncoGuardAPI
@@ -253,3 +254,6 @@ Pour plus d’informations, contactez l’équipe de développement via [nicolas
 ---
 
 *Licence : [Indiquez votre licence ici]*
+=======
+# OncoGuardApi
+>>>>>>> 7d6cdc0daa301a8307bd328508bbc850d4f7fc35
