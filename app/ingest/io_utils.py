@@ -1,0 +1,124 @@
+import csv
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+from PIL import Image, ImageOps
+
+from .config import IMG_DIR, INFO_TXT, LABELS_CSV, AGE_BINS, AGES_CSV
+
+# ---------- Fichiers & IDs ----------
+def next_image_id(prefix: str = "bfa") -> str:
+    n = len(list(IMG_DIR.glob("*.png"))) + 1
+    return f"{prefix}{n:03d}"
+
+def append_info_line(img_id: str, side: str, view: str,
+                     tissue: str, abn: str,
+                     sev: str = "", x: str = "", y: str = "", r: str = "") -> None:
+    side = side.upper()
+    side = {"L": "LEFT", "R": "RIGHT"}.get(side, side if side in {"LEFT","RIGHT"} else "UNKNOWN")
+    view = (view or "UNK").upper()
+    tissue = (tissue or "U").upper()
+    abn = (abn or "NORM").upper()
+    parts = [img_id, side, view, tissue, abn]
+    if abn != "NORM" and sev:
+        parts.append(sev.upper())
+    if x and y and r:
+        try:
+            parts.extend([str(int(float(x))), str(int(float(y))), str(int(float(r)))])
+        except Exception:
+            pass
+    with INFO_TXT.open("a", encoding="utf-8") as f:
+        f.write(" ".join(parts) + "\n")
+
+def read_labels() -> Dict[str, Dict[str, str]]:
+    if not LABELS_CSV.exists():
+        return {}
+    out: Dict[str, Dict[str, str]] = {}
+    with LABELS_CSV.open(newline="", encoding="utf-8") as f:
+        rd = csv.DictReader(f)
+        for row in rd:
+            rid = (row.get("id") or "").strip()
+            if not rid: continue
+            out[rid] = {
+                "abn": (row.get("abnormality") or "NORM").strip().upper(),
+                "sev": (row.get("severity") or "").strip().upper(),
+                "x": (row.get("x") or "").strip(),
+                "y": (row.get("y") or "").strip(),
+                "r": (row.get("r") or "").strip(),
+            }
+    return out
+
+# ---------- Image helpers ----------
+def resize_pad_to_square(img: Image.Image, size: int = 1024) -> Image.Image:
+    img = ImageOps.exif_transpose(img)
+    if img.mode not in ("L", "I;16", "I", "F"):
+        img = img.convert("L")
+    w, h = img.size
+    s = min(size/w, size/h)
+    nw, nh = int(round(w*s)), int(round(h*s))
+    img = img.resize((nw, nh), Image.BILINEAR)
+    canvas = Image.new("L", (size, size), 0)
+    canvas.paste(img, ((size-nw)//2, (size-nh)//2))
+    return canvas
+
+def parse_side_view_from_name(name: str) -> Tuple[str, str]:
+    n = name.lower()
+    side = "UNKNOWN"; view = "UNK"
+    if any(k in n for k in ["_l_", "-l-", " left", " left.", " left_", "l-"]): side = "L"
+    if any(k in n for k in ["_r_", "-r-", " right", " right.", " right_", "r-"]): side = "R"
+    if "mlo" in n: view = "MLO"
+    elif "cc" in n: view = "CC"
+    return side, view
+
+# ---------- Ages CSV ----------
+def load_existing_ages() -> List[int]:
+    if not AGES_CSV.exists(): return []
+    vals: List[int] = []
+    with AGES_CSV.open(newline="", encoding="utf-8") as f:
+        rd = csv.DictReader(f)
+        for row in rd:
+            try:
+                a = int(row.get("age") or "")
+                if 10 < a < 120:
+                    vals.append(a)
+            except Exception:
+                continue
+    return vals
+
+def age_to_bin(age: int) -> str:
+    for lo, hi, mid in AGE_BINS:
+        if lo <= age < hi:
+            return f"{lo}-{hi-1}"
+    return "80+"
+
+def save_age_row(img_id: str, age: Optional[int], source: str) -> None:
+    from .config import AGES_CSV, DATASET_DIR
+    out_file = AGES_CSV
+    if age is None:
+        age_bin, val = "", ""
+    else:
+        age_bin, val = age_to_bin(age), str(age)
+
+    line = f"{img_id},{val},{age_bin},{source}\n"
+    try:
+        with out_file.open("a", newline="", encoding="utf-8") as f:
+            f.write(line)
+    except PermissionError:
+        # fallback si ages.csv est verrouillé (Excel ouvert, etc.)
+        buf = DATASET_DIR / "ages_buffer.csv"
+        with buf.open("a", newline="", encoding="utf-8") as f:
+            # ajoute l’entête si fichier vide
+            if buf.stat().st_size == 0:
+                f.write("id,age,age_bin,source\n")
+            f.write(line)
+        print(f"[WARN] ages.csv verrouillé : écrit dans {buf.name}. Fermez Excel puis fusionnez.")
+
+
+def impute_age_from_bins(existing: List[int]) -> Optional[int]:
+    if not existing: return None
+    # Bin le plus fréquent → valeur médiane
+    hist = []
+    for lo, hi, mid in AGE_BINS:
+        c = sum(1 for a in existing if lo <= a < hi)
+        hist.append((c, mid))
+    hist.sort(reverse=True)
+    return hist[0][1] if hist and hist[0][0] > 0 else None
