@@ -118,6 +118,8 @@ await fetch("http://127.0.0.1:8000/api/v1/image-inference/predict", {
 🧠 Entraînement du modèle
 python -m app.ml.train
 
+Lancer API 
+uvicorn app.main:app --reload
 
 Cela :
 

@@ -1,63 +1,82 @@
-import glob
+# app/ingest/pipeline.py
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import List
-from .config import RAW_IMG_DIR, RAW_DICOM_DIR, IMG_DIR, ANON_DICOM_DIR, INFO_TXT, AGES_CSV
-from .io_utils import read_labels
+from typing import List, Tuple, Optional, Dict
+
+from .config import IMG_DIR, ANON_DICOM_DIR
+
+# read_labels peut ne pas exister : on gère proprement
+try:
+    from .io_utils import read_labels  # lit LABELS_CSV -> Dict[str, Dict[str, str]]
+except Exception:
+    def read_labels() -> Dict[str, Dict[str, str]]:  # fallback
+        return {}
+
 from .photo_proc import process_one_photo
 
-# DICOM support optionnel (seulement si pydicom installé)
+# DICOM optionnel
 try:
     from .dicom_proc import process_one_dicom
     HAS_PYDICOM = True
 except Exception:
     HAS_PYDICOM = False
 
-def _collect_images() -> List[Path]:
-    photos = []
-    for folder in (RAW_IMG_DIR, RAW_DICOM_DIR):
-        for ext in ("*.jpg","*.jpeg","*.png","*.bmp","*.tif","*.tiff","*.webp"):
-            photos += [Path(p) for p in glob.glob(str(folder / "**" / ext), recursive=True)]
-    return sorted(photos)
+PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+DICOM_EXTS = {".dcm", ".DCM"}
 
-def _collect_dicoms() -> List[Path]:
-    if not HAS_PYDICOM: return []
-    dcm = []
-    for ext in ("*.dcm","*.DCM"):
-        dcm += [Path(p) for p in glob.glob(str(RAW_DICOM_DIR / "**" / ext), recursive=True)]
-    return sorted(dcm)
 
-def run() -> None:
-    labels = read_labels()
+def _proc_photo_one(p: Path, labels, out_img_dir: Path) -> Tuple[str, Path, Optional[Path]]:
+    img_id, png_out = process_one_photo(p, labels, out_img_dir=out_img_dir)
+    return img_id, png_out, None
 
-    # Photos
-    photo_paths = _collect_images()
-    count_photo = 0
-    for p in photo_paths:
-        try:
-            process_one_photo(p, labels)
-            count_photo += 1
-        except Exception as e:
-            print(f"[WARN] Photo skipped {p.name}: {e}")
 
-    # Dicoms
-    count_dicom = 0
-    if HAS_PYDICOM:
-        for d in _collect_dicoms():
+def _proc_dicom_one(p: Path, labels, out_img_dir: Path, out_dicom_dir: Path) -> Tuple[str, Path, Optional[Path]]:
+    assert HAS_PYDICOM, "pydicom manquant"
+    img_id, png_out, dcm_out = process_one_dicom(
+        p, labels, out_img_dir=out_img_dir, out_dicom_dir=out_dicom_dir
+    )
+    return img_id, png_out, dcm_out
+
+
+def run(
+    input_paths: List[Path],
+    out_img_dir: Path = IMG_DIR,
+    out_dicom_dir: Path = ANON_DICOM_DIR,
+    max_workers: Optional[int] = None,
+) -> List[Tuple[str, Path, Optional[Path]]]:
+    """
+    Traite UNIQUEMENT les fichiers fournis.
+    Retourne: [(image_id, png_path, anonymized_dicom_path|None)].
+    """
+    if not input_paths:
+        return []
+
+    # parallélisme borné
+    workers = max(1, int(os.getenv("INGEST_WORKERS", "2")))
+    if max_workers:
+        workers = max(1, min(workers, max_workers))
+
+    labels = read_labels() or {}
+    results: List[Tuple[str, Path, Optional[Path]]] = []
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = []
+        for p in input_paths:
+            ext = p.suffix.lower()
+            if ext in PHOTO_EXTS:
+                futures.append(ex.submit(_proc_photo_one, p, labels, out_img_dir))
+            elif ext in DICOM_EXTS and HAS_PYDICOM:
+                futures.append(ex.submit(_proc_dicom_one, p, labels, out_img_dir, out_dicom_dir))
+            else:
+                continue
+
+        for fut in as_completed(futures):
             try:
-                process_one_dicom(d, labels)
-                count_dicom += 1
+                res = fut.result()
+                if res:
+                    results.append(res)
             except Exception as e:
-                print(f"[WARN] DICOM skipped {d.name}: {e}")
+                print(f"[WARN] Fichier ignoré: {e}")
 
-    total = count_photo + count_dicom
-    if total == 0:
-        print(f"[INFO] Aucune image trouvée.")
-        print(f" - Place des JPEG/PNG dans: {RAW_IMG_DIR}")
-        print(f" - Ou des DICOM dans     : {RAW_DICOM_DIR}")
-        return
-
-    print(f"OK: {total} images traitées ({count_photo} photos, {count_dicom} dicom).")
-    print(f"PNG images       -> {IMG_DIR}")
-    print(f"Anonymized DICOM -> {ANON_DICOM_DIR}")
-    print(f"info.txt         -> {INFO_TXT}")
-    print(f"ages.csv         -> {AGES_CSV}")
+    return results

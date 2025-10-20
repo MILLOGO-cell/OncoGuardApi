@@ -1,7 +1,9 @@
 from typing import Annotated, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr, StringConstraints
+from jose import JWTError, jwt
 
 from app.api.v1.models.password_reset import PasswordResetCode
 from app.api.v1.models.user import User
@@ -13,7 +15,7 @@ from app.core.security import (
     verify_password,
 )
 from app.db.database import SessionLocal
-from app.api.v1.schemas.user import Token, UserCreate, UserLogin, UserOut
+from app.api.v1.schemas.user import Token, UserCreate, UserLogin, UserOut, UserUpdate
 from app.api.v1.services.user_service import get_user_by_email, create_user
 from app.core.email import send_email
 from app.core.config import settings
@@ -21,19 +23,12 @@ import random
 
 router = APIRouter()
 
-# -------- Schemas locaux pour read/update/delete --------
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
 class VerifyCodePayload(BaseModel):
     email: EmailStr
     code: Annotated[str, StringConstraints(min_length=6, max_length=6)]
 
-class UserUpdate(BaseModel):
-    email: Optional[EmailStr] = None
-    full_name: Optional[str] = None
-    is_active: Optional[bool] = None
-    is_verified: Optional[bool] = None
-    password: Optional[str] = None  # si fourni, sera hashé
-
-# -------- DB dependency --------
 def get_db():
     db = SessionLocal()
     try:
@@ -41,7 +36,6 @@ def get_db():
     finally:
         db.close()
 
-# -------- Helpers --------
 def generate_otp() -> str:
     return f"{random.randint(100000, 999999)}"
 
@@ -54,7 +48,39 @@ def email_exists(db: Session, email: str, exclude_user_id: int | None = None) ->
         q = q.filter(User.id != exclude_user_id)
     return db.query(q.exists()).scalar()
 
-# ===================== Auth & Password reset =====================
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Impossible de valider les informations d'identification",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(
+            token, 
+            settings.SECRET_KEY, 
+            algorithms=[settings.ALGORITHM]
+        )
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    user = get_user_by_id(db, int(user_id))
+    if user is None:
+        raise credentials_exception
+    
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Compte utilisateur inactif"
+        )
+    
+    return user
 
 @router.post("/register", response_model=UserOut, status_code=201)
 def register(user: UserCreate, db: Session = Depends(get_db)):
@@ -134,7 +160,40 @@ def reset_password(payload: PasswordResetConfirm, db: Session = Depends(get_db))
     db.commit()
     return {"message": "Mot de passe mis à jour avec succès."}
 
-# ===================== Users: list / read / update / delete =====================
+@router.get("/me", response_model=UserOut)
+def get_me(current_user: User = Depends(get_current_user)):
+    return current_user
+
+@router.put("/me", response_model=UserOut)
+def update_me(
+    payload: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if payload.email is not None:
+        if email_exists(db, payload.email, exclude_user_id=current_user.id):
+            raise HTTPException(status_code=400, detail="Email déjà utilisé.")
+        current_user.email = payload.email
+    
+    if payload.full_name is not None:
+        current_user.full_name = payload.full_name
+    
+    if payload.password:
+        current_user.hashed_password = hash_password(payload.password)
+    
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_me(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    db.delete(current_user)
+    db.commit()
+    return None
 
 @router.get("/users", response_model=List[UserOut])
 def list_users(db: Session = Depends(get_db)):

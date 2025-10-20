@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     DATABASE_URL: str
     SECRET_KEY: str
+    ALGORITHM: str = Field(default="HS256")
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=60)
+    REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7)
     SMTP_SERVER: str
     SMTP_PORT: int
     SMTP_USER: str
@@ -30,6 +33,5 @@ def get_database_url():
     return settings.DATABASE_URL
 
 
-# 📂 Chemin absolu vers le dossier MIAS (portable)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MIAS_DATA_DIR = os.path.join(BASE_DIR, "data", "mias")
