@@ -19,3 +19,8 @@ class BreastDensity(str, Enum):
     B = "B - Densité fibreuse éparse (25-50%)"
     C = "C - Hétérogènement dense (51-75%)"
     D = "D - Extrêmement dense (>75%)"
+    
+class AnalysisStatus(str, Enum):
+    PENDING = "PENDING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"

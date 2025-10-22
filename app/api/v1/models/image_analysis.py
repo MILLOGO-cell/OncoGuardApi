@@ -24,7 +24,7 @@ class ImageAnalysis(Base):
 
     id: int = Column(Integer, primary_key=True, index=True)
     filename: str = Column(String, nullable=False)
-    patient_id: int | None = Column(Integer, ForeignKey("patients.id"), nullable=True)
+    # patient_id: int | None = Column(Integer, ForeignKey("patients.id"), nullable=True)
     result_class: BiradsCategory | None = Column(Enum(BiradsCategory), nullable=True)
     confidence: float | None = Column(Float, nullable=True)
     description: str | None = Column(String, nullable=True)
@@ -35,4 +35,4 @@ class ImageAnalysis(Base):
     )
     submitted_at: DateTime = Column(DateTime(timezone=True), server_default=func.now())
 
-    patient = relationship("Patient", back_populates="analyses")
+    # patient = relationship("Patient", back_populates="analyses")

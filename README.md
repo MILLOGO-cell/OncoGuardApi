@@ -1,259 +1,244 @@
-<<<<<<< HEAD
-text
+# 🩺 OncoGuardAPI
 
-# OncoGuardAPI
-
-## Description
-
-OncoGuardAPI est un système avancé d’analyse et de détection d’anomalies médicales, spécialisé dans le traitement d’images pour le diagnostic du cancer du sein.  
-Cette API RESTful, développée en Python avec FastAPI, intègre des modules performants de traitement d’images et d’analyse scientifique, utilisant notamment :
-
-- Clustering K-means pour la segmentation d’images  
-- Classification floue pour la détection précise d’anomalies  
-- Réseaux de neurones artificiels pour des modèles profonds d’apprentissage  
-- Traitement d’images avec OpenCV et Pillow  
-- Validation et gestion des données avec Pydantic  
-- Sécurité des endpoints grâce à JWT, clés API et support optionnel de Mutual TLS (mTLS)
-
-Ce projet est conçu pour être performant, modulaire et sécurisé, afin de s’intégrer dans des environnements cliniques exigeants.
+Système d’analyse et de détection d’anomalies médicales (cancer du sein) basé sur **FastAPI** et des modèles de **Machine Learning** (HOG/LBP/Wavelets + SVM/XGBoost).  
+L’API permet de **téléverser, anonymiser et classer** des images mammographiques selon la classification **BI-RADS** (1, 2, 5).
 
 ---
 
-## Outils et bibliothèques utilisées
+## 🚀 Fonctionnalités principales
 
-- **FastAPI** : Framework web moderne, rapide et asynchrone pour construire l’API  
-- **Uvicorn** : Serveur ASGI ultra-rapide pour exécuter FastAPI  
-- **Pillow & OpenCV** : Librairies de traitement d’image  
-- **NumPy & SciPy** : Pour les calculs numériques et le traitement scientifique  
-- **Scikit-learn** : Implémentation d’algorithmes ML dont K-means  
-- **Scikit-fuzzy** : Logiciel pour la classification floue  
-- **TensorFlow / PyTorch** : Frameworks pour réseaux de neurones artificiels (optionnel)  
-- **Python-JOSE & PassLib** : Gestion et sécurisation des tokens JWT et des mots de passe  
-- **Matplotlib & Seaborn** : Visualisation graphique pour débogage et analyses exploratoires  
+- API **FastAPI** documentée via **Swagger** et **ReDoc**
+- Pipeline complet d’analyse d’images médicales (upload → prétraitement → inférence)
+- Extraction de **features** : HOG, LBP, Wavelets
+- Modèles **SVM** et **XGBoost** avec sélection automatique du meilleur score
+- Enregistrement automatique des prédictions en base de données
+- Système d’**anonymisation DICOM/PNG**
+- Endpoints pour **exportation ZIP** et **statistiques BI-RADS**
+- Configuration **CORS prête pour Next.js**
 
 ---
 
-## Sécurité et certificats TLS/mTLS
-
-Pour garantir la confidentialité et l’intégrité des échanges, OncoGuardAPI supporte la sécurisation via **TLS (HTTPS)**, avec la possibilité d’ajouter une couche supplémentaire de sécurité via **Mutual TLS (mTLS)**.  
-
-- **TLS standard** sécurise la communication entre le client et le serveur en chiffrant les données.  
-- **Mutual TLS (mTLS)** ajoute une authentification mutuelle, où le client doit présenter un certificat valide en plus du certificat serveur.  
-
-### Gestion des certificats
-
-- Les certificats privés (`server.key`) et publics (`server.crt`), ainsi que les certificats d’autorité (CA) pour la validation des clients, sont placés dans un dossier sécurisé dédié `certs/` à la racine du projet, par exemple :  
+## 🧱 Structure du projet
 
 OncoGuardAPI/
-├── certs/
-│ ├── server.key
-│ ├── server.crt
-│ └── ca_client.crt # Pour mTLS
-
-text
-
-- Ces fichiers **ne sont pas versionnés** dans Git (ajouter `certs/` dans `.gitignore`) pour des raisons de sécurité.  
-- Les chemins d’accès aux certificats sont référencés dans un fichier `.env` via des variables d’environnement, par exemple :  
-
-TLS_CERT_PATH=./certs/server.crt
-TLS_KEY_PATH=./certs/server.key
-TLS_CA_CLIENT_CERT=./certs/ca_client.crt # Pour mTLS
-
-text
-
-### Mise en œuvre dans le déploiement
-
-- FastAPI, via Uvicorn, permet d’activer TLS classique en lançant le serveur avec des options SSL :  
-
-uvicorn app.main:app --host 0.0.0.0 --port 443
---ssl-keyfile ./certs/server.key
---ssl-certfile ./certs/server.crt
-
-text
-
-- Pour une gestion complète du **mTLS** (authentification client), il est recommandé d’utiliser un **proxy inverse** comme **Nginx** ou **Traefik** configuré pour valider les certificats clients avant de transmettre les requêtes à FastAPI.  
-- Cette configuration garantit que seuls les clients disposant d’un certificat valide peuvent accéder à l’API, renforçant ainsi la sécurité en milieux sensibles.
+├─ app/
+│ ├─ api/v1/
+│ │ ├─ routes/
+│ │ │ ├─ auth.py # Authentification / utilisateurs
+│ │ │ ├─ image_inference.py # Prédiction d’image
+│ │ │ ├─ ingest.py # Anonymisation + prédiction
+│ │ │ ├─ ingest_files.py # Listing / téléchargement / export
+│ │ │ └─ stats.py # Statistiques et rapports
+│ │ ├─ models/ # SQLAlchemy
+│ │ └─ schemas/ # Pydantic
+│ ├─ db/ # Connexion / Base SQLAlchemy
+│ ├─ ml/ # Entraînement et pipeline ML
+│ ├─ ingest/ # Modules d’anonymisation DICOM
+│ ├─ core/config.py # Variables d’environnement
+│ └─ main.py # Entrée principale FastAPI
+├─ .env.development
+├─ requirements.txt
+├─ README.md
+└─ venv/
 
 ---
 
-## Installation
+## 🛠️ Installation
 
-1. Clonez ce dépôt git :
-
-git clone <https://votre-repository-url/OncoGuardAPI.git>
+```bash
+git clone <URL_DU_REPO> OncoGuardAPI
 cd OncoGuardAPI
 
-2. Créez et activez un environnement virtuel Python (recommandé) :
-
 python -m venv venv
-Linux/macOS
-
+# Windows PowerShell
+.\venv\Scripts\Activate.ps1
+# Linux/macOS
 source venv/bin/activate
-Windows PowerShell
-
-venv\Scripts\activate
-
-1. Installez les dépendances avec pip :
 
 pip install -r requirements.txt
 
----
+requirements.txt minimal
+fastapi
+uvicorn[standard]
+SQLAlchemy
+pydantic
+pydantic-settings
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+email-validator
+numpy
+pandas
+scikit-learn
+scikit-image
+opencv-python-headless
+PyWavelets
+xgboost
+joblib
+pydicom
+Pillow
 
-## Structure du projet
+⚙️ Configuration .env.development
+DEBUG=True
+DATABASE_URL=sqlite:///./dev.db
+SECRET_KEY=dev_key
 
-OncoGuardAPI/
-│
-├── app/
-│ ├── main.py # Point d'entrée FastAPI
-│ ├── api/ # Endpoints et routeurs API
-│ ├── core/ # Configuration, sécurité
-│ ├── db/ # Configuration base de données (SQLite par exemple)
-│ ├── ml/ # Modules de machine learning (K-means, réseaux, classification BIRADS)
-│ │ ├── birads_classifier.py # Logique classification BIRADS
-│ │ ├── preprocess.py # Prétraitement d'image
-│ │ └── utils.py # Fonctions auxiliaires
-│ └── utils/ # Fonctions utilitaires diverses
-│
-├── certs/ # Certificats TLS/mTLS (non versionné)
-│ ├── server.key
-│ ├── server.crt
-│ └── ca_client.crt
-│
-├── tests/ # Tests unitaires et d'intégration
-├── .env # Variables d'environnement (non versionné)
-├── requirements.txt # Dépendances Python
-├── README.md # Ce fichier
-└── .gitignore # Ignorer fichiers sensibles, envs, certs, etc.
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+EMAIL_USE_TLS=True
+SMTP_USER=nicolasmillogo3@gmail.com
+SMTP_PASSWORD=fnbt tyzk nipm etuc
+FROM_EMAIL=nicolasmillogo3@gmail.com
 
-text
+FRONTEND_URL=http://localhost:3000
+API_KEY=devapikey
 
----
+🌐 CORS et connexion Next.js
 
-## Lancement de l’API en mode développement
+La configuration CORS dans app/main.py autorise :
 
-Démarrez le serveur FastAPI en mode développement avec rechargement automatique :
+origins = {"http://localhost:3000", "http://127.0.0.1:3000", settings.FRONTEND_URL}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(origins),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+
+Et côté Next.js, assure-toi d’envoyer les credentials :
+
+await fetch("http://127.0.0.1:8000/api/v1/image-inference/predict", {
+  method: "POST",
+  credentials: "include",
+  body: formData,
+});
+
+🧠 Entraînement du modèle
+python -m app.ml.train
+
+Lancer API 
 uvicorn app.main:app --reload
 
-Migration
-alembic revision --autogenerate -m "Initial migration"
-alembic upgrade head
+Cela :
 
-text
+Charge le dataset MIAS
 
-L’API sera accessible à l’adresse : `http://127.0.0.1:8000`
+Extrait les features (HOG/LBP/Wavelets)
 
----
+Évalue SVM et XGBoost
 
-## Documentation interactive
+Sauvegarde le meilleur pipeline dans app/ml/models/*.joblib
 
-FastAPI génère automatiquement la documentation Swagger accessible via :
+🔬 Endpoints principaux
+Catégorie Endpoint Description
+🔐 Authentification /api/v1/auth/* Gestion des utilisateurs / mot de passe
+🩻 Analyse d'images /api/v1/image-inference/predict Téléverse une image et retourne la prédiction BI-RADS
+📊 Statistiques /api/v1/stats/summary Résumé statistique des analyses
+🧩 Anonymisation /api/v1/ingest/anonymize Anonymise des images DICOM/PNG et (optionnel) lance la prédiction
+🗂️ Fichiers /api/v1/ingest/files Liste les images anonymisées disponibles
+💾 Exportation /api/v1/ingest/export/zip Exporte tout ou partie des images en ZIP
+📈 Exemple de prédiction
+curl -X POST "http://127.0.0.1:8000/api/v1/image-inference/predict" ^
+  -H "accept: application/json" ^
+  -H "Content-Type: multipart/form-data" ^
+  -F "file=@app/data/mias/mdb001.pgm;type=image/pgm"
 
-<http://127.0.0.1:8000/docs>
 
-text
+Réponse :
 
-ou la documentation Redoc :
+{
+  "label": "Normal",
+  "birads": "BI-RADS 1",
+  "confidence": 0.9575,
+  "filename": "9bc177f2-ac36-4cbf-93bc-2279ca1881af.png"
+}
 
-<http://127.0.0.1:8000/redoc>
+📊 Statistiques
 
-text
+Endpoint :
+GET /api/v1/stats/summary
 
----
+Retourne :
 
-## Exemple minimal et complet d’endpoint FastAPI pour import et classification d’images BIRADS
+total d’images analysées
 
-Dans `app/api/v1/endpoints/analyze.py` :
+moyenne de confiance
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
-from PIL import Image
-import numpy as np
-from app.ml.preprocess import preprocess_image
-from app.ml.birads_classifier import classify_birads
+répartition par BI-RADS
 
-router = APIRouter()
+série temporelle (30 derniers jours)
 
-@router.post("/analyze-image")
-async def analyze_image(file: UploadFile = File(...)):
-try:
+histogramme de confiance (10 bins)
 
-# Ouvrir l'image uploadée
+🧮 Anonymisation
 
-image = Image.open(file.file).convert("RGB")
-except Exception:
-raise HTTPException(status_code=400, detail="Fichier image invalide")
+Endpoint :
+POST /api/v1/ingest/anonymize
 
-text
+Prend plusieurs fichiers (PNG ou DICOM), exécute le pipeline app/ingest/pipeline.py, puis :
 
-# Prétraiter l'image (redimension, normalisation, etc.)
+Crée des copies anonymisées
 
-processed_img = preprocess_image(image)
+Stocke les métadonnées (âge, ID, etc.)
 
-# Classifier avec le modèle BIRADS
+Optionnel : effectue la prédiction automatique
 
-birads_class = classify_birads(processed_img)
+Permet la persistance en base (ImageAnalysis)
 
-return {"birads_category": birads_class}
+💾 Export et téléchargement
 
-text
+Endpoints :
 
----
+/api/v1/ingest/files → liste des images disponibles
 
-Dans `app/ml/preprocess.py` :
+/api/v1/ingest/download/{kind}/{filename} → téléchargement individuel
 
-from PIL import Image
-import numpy as np
+/api/v1/ingest/export/zip → export groupé (avec filenames= ou all_files=true)
 
-def preprocess_image(image: Image.Image) -> np.ndarray:
+📚 Documentation interactive
 
-# Exemple de prétraitement : redimensionnement, conversion en numpy array normalisé
+Swagger : http://127.0.0.1:8000/docs
 
-image = image.resize((224, 224))
-img_array = np.array(image).astype("float32") / 255.0
+ReDoc : http://127.0.0.1:8000/redoc
 
-# Ajouter batch dimension si nécessaire
+🧯 Dépannage rapide
+Erreur Solution
+ImportError: No module named 'pydicom' pip install pydicom
+FileNotFoundError: mias_annotations.csv python -m app.utils.parse
+cv2 error (GUI) pip install opencv-python-headless
+xgboost not found pip install xgboost
+📜 Licence
 
-img_array = np.expand_dims(img_array, axis=0)
-return img_array
+MIT License © 2025 Nicolas Millogo
+Utilisation libre, avec mention de l’auteur.
 
-text
+📧 Contact
 
----
+Mainteneur : nicolasmillogo3@gmail.com
 
-Dans `app/ml/birads_classifier.py` :
+## 📝 Licence
 
-import numpy as np
-Exemple simplifié : fonction simulant une classification BIRADS
+MIT License
 
-def classify_birads(image_array: np.ndarray) -> str:
+Copyright (c) 2025 Nicolas Millogo
 
-# Ici, on chargerait et exécuterait un modèle ML réel (ex: TensorFlow/PyTorch)
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-# Pour simplifier, on retourne une catégorie factice
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-# Exemples BIRADS : "BIRADS 1", "BIRADS 2", ..., "BIRADS 6"
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
-# Ici, classification aléatoire exemple
-
-import random
-categories = ["BIRADS 1", "BIRADS 2", "BIRADS 3", "BIRADS 4", "BIRADS 5", "BIRADS 6"]
-return random.choice(categories)
-
-text
-
----
-
-## Contact
-
-Pour plus d’informations, contactez l’équipe de développement via [nicolasmillogo3@gmail.com](mailto:nicolasmillogo3@gmail.com).
-
----
-
-*Ce projet est réalisé dans le cadre d’un mémoire de fin d’études pour améliorer la qualité et la rapidité du diagnostic médical dans des contextes à ressources limitées.*
-
----
-
-*Licence : [Indiquez votre licence ici]*
-=======
-# OncoGuardApi
->>>>>>> 7d6cdc0daa301a8307bd328508bbc850d4f7fc35

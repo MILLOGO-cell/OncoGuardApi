@@ -1,27 +1,24 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
 from app.core.config import settings
-from app.db.database import init_db  
+from app.db.database import init_db
+from app.api.v1.routes import api_router
 
-from app.api.v1.routes import auth         
+app = FastAPI(title="OncoGuardAPI", version="1.0.0")
 
-app = FastAPI(
-    title="OncoGuardAPI",
-    version="1.0.0"
-)
+origins = {"http://localhost:3000", "http://127.0.0.1:3000"}
+if getattr(settings, "FRONTEND_URL", None):
+    origins.add(settings.FRONTEND_URL)
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL],
+    allow_origins=list(origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Routes publiques
-app.include_router(auth.router, prefix="/auth", tags=["auth"])
+app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
@@ -32,3 +29,8 @@ async def startup_event():
     if settings.DEBUG:
         print("Initialisation de la base de données SQLite...")
         init_db()
+        for r in app.routes:
+            try:
+                print(f"[route] {r.path} -> {','.join(r.methods)}")
+            except Exception:
+                pass
