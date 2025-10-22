@@ -1,48 +1,52 @@
 # ===============================
-# Dockerfile pour le backend FastAPI
+# Dockerfile — Backend FastAPI (SQLite)
+# Base: Debian (python:3.12-slim)
 # ===============================
 
-# Étape 1 : build
+# ---------- Build stage ----------
 FROM python:3.12-slim AS builder
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Installer dépendances système minimales
+# System deps (runtime libs only for build resolution):
+# - libgl1        : OpenCV runtime (replaces old libgl1-mesa-glx)
+# - libglib2.0-0  : OpenCV runtime dependency
+# - libgomp1      : XGBoost runtime (OpenMP)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev libgl1-mesa-glx libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+    libgl1 libglib2.0-0 libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
 
-# Copier les dépendances Python
+# Install Python deps into a relocatable prefix to copy later
 COPY requirements.txt .
-
-# Installer les dépendances dans un dossier temporaire
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 
-# Étape 2 : runtime final
+# ---------- Final runtime stage ----------
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Copier les dépendances Python depuis l’étape précédente
+# Runtime libs (same as in builder)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 libglib2.0-0 libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Bring in Python site-packages from builder
 COPY --from=builder /install /usr/local
 
-# Copier tout le code source du projet
+# Copy the whole project (includes your dev.db at repo root)
 COPY . /app
 
-# Copier la base SQLite (elle est déjà dans le dépôt à la racine)
-# —> rien à changer, elle sera copiée automatiquement avec le COPY ci-dessus
+# Optional: verify that the SQLite DB is present at build-time
+# (won't fail the build if it isn't)
+RUN ls -lh dev.db || echo "⚠️  dev.db not found at build time (will still run if app creates it)."
 
-# Vérifie que la base est bien accessible
-RUN ls -lh dev.db || echo "⚠️ Base de données SQLite absente, vérifier le dépôt."
-
-# Exposer le port du backend
+# Expose API port
 EXPOSE 8000
 
-# Commande de démarrage
-# NB : ta structure de projet indique que ton app principale est dans /app/app/
-# Ajuste le chemin du module selon ton fichier principal (main.py, api.py, etc.)
+# Start FastAPI via Uvicorn
+# Adjust module path if your entrypoint differs (e.g., app.api:app)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
