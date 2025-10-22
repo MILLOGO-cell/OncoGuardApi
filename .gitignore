@@ -16,8 +16,8 @@ certs/
 .env
 
 # Base de données SQLite locale (fichier binaire)
-*.sqlite3
-*.db
+# *.sqlite3
+# *.db
 
 # Logs, fichiers temporaires, caches
 *.log
@@ -47,7 +47,7 @@ Thumbs.db
 certs/
 .env
 .env.*
-*.db
+# *.db
 =======
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -109,8 +109,8 @@ cover/
 # Django stuff:
 *.log
 local_settings.py
-db.sqlite3
-db.sqlite3-journal
+# db.sqlite3
+# db.sqlite3-journal
 
 # Flask stuff:
 instance/
