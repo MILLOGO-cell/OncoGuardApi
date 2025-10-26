@@ -1,199 +1,291 @@
-# app/api/v1/routes/ingest.py
+# app/api/v1/routes/ingest.py - AVEC PREVIEW
+from __future__ import annotations
+
 import os
+import io
+import time
+import zipfile
 import uuid
-import csv
 import shutil
 from pathlib import Path
-from typing import List, Tuple, Literal, Dict
+from typing import List, Optional, Iterable, Dict
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Depends, Request
-from fastapi.responses import FileResponse
-from sqlalchemy.orm import Session
-from urllib.parse import quote
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File
+from fastapi.responses import FileResponse, StreamingResponse, Response
 
-from app.api.v1.schemas.ingest import IngestItem, IngestResponse, PredResult
-from app.db.database import get_db
-from app.api.v1.models.image_analysis import ImageAnalysis
-from app.api.v1.models.enums import BiradsCategory, AnalysisStatus
-from app.ingest.config import RAW_IMG_DIR, RAW_DICOM_DIR, IMG_DIR, ANON_DICOM_DIR, AGES_CSV
-from app.ingest.pipeline import run as run_pipeline
-from app.ml.predictor import predict as ml_predict
+from app.ingest.config import DERIVED_IMG_DIR, NORMALIZED_DICOM_DIR
+from app.api.v1.schemas.files import FileItem
 
 try:
-    from app.ingest.overlay import overlay_tag, TAGGED_DIR
+    import pydicom
+    import cv2
+    import numpy as np
+    _HAS_DICOM_PREVIEW = True
 except Exception:
-    overlay_tag = None
-    TAGGED_DIR = None
+    _HAS_DICOM_PREVIEW = False
 
-router = APIRouter(prefix="/ingest", tags=["Anonymisation et traitement d’images"])
+try:
+    from app.ingest.overlay import TAGGED_DIR  # type: ignore
+except Exception:
+    TAGGED_DIR = None  # type: ignore[assignment]
 
-PHOTO_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-DICOM_EXT = {".dcm", ".DCM"}
+router = APIRouter(prefix="/ingest", tags=["Fichiers et exportations"])
 
-
-def _save_uploaded_files(files: List[UploadFile]) -> List[Tuple[str, str, str]]:
-    saved: List[Tuple[str, str, str]] = []
-    RAW_IMG_DIR.mkdir(parents=True, exist_ok=True)
-    RAW_DICOM_DIR.mkdir(parents=True, exist_ok=True)
-    for f in files:
-        name = f.filename or "file"
-        ext = os.path.splitext(name)[1].lower()
-        if ext in PHOTO_EXT:
-            dest_dir, kind = RAW_IMG_DIR, "photo"
-        elif ext in DICOM_EXT:
-            dest_dir, kind = RAW_DICOM_DIR, "dicom"
-        else:
-            ct = (f.content_type or "").lower()
-            if "dicom" in ct:
-                dest_dir, kind, ext = RAW_DICOM_DIR, "dicom", ".dcm"
-            elif ct.startswith("image/"):
-                dest_dir, kind = RAW_IMG_DIR, "photo"
-                ext = ext or ".png"
-            else:
-                raise HTTPException(status_code=400, detail=f"Format non supporté: {name}")
-        fname = f"{uuid.uuid4().hex}{ext}"
-        dest = dest_dir / fname
-        with dest.open("wb") as out:
-            shutil.copyfileobj(f.file, out, length=1024 * 1024)
-        saved.append((name, str(dest), kind))
-    return saved
-
-
-def _read_age_for_ids(ids: List[str]) -> dict:
-    out = {}
-    if not ids or not AGES_CSV.exists():
-        return out
-    needed = set(ids)
-    with AGES_CSV.open(newline="", encoding="utf-8") as f:
-        rd = csv.DictReader(f)
-        for row in rd:
-            rid = (row.get("id") or "").strip()
-            if rid in needed:
-                val = row.get("age")
-                src = row.get("source") or ""
-                try:
-                    age_val = int(val) if val else None
-                except Exception:
-                    age_val = None
-                out[rid] = {"age": age_val, "source": src}
-    return out
-
-
-def _map_label_to_birads(label: str) -> BiradsCategory:
-    lab = (label or "").strip().lower()
-    if lab == "normal":
-        return BiradsCategory.BI_RADS_1
-    if lab == "benign":
-        return BiradsCategory.BI_RADS_2
-    if lab == "malignant":
-        return BiradsCategory.BI_RADS_5
-    return BiradsCategory.BI_RADS_0
-
-
-@router.get("/download/{kind}/{filename}", name="ingest_download")
-def ingest_download(kind: Literal["png", "dicom", "tagged"], filename: str):
-    if kind == "png":
-        path = IMG_DIR / filename
-    elif kind == "dicom":
-        path = ANON_DICOM_DIR / filename
-    else:
-        if TAGGED_DIR is None:
-            raise HTTPException(status_code=404, detail="Fichier introuvable")
-        path = TAGGED_DIR / filename
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Fichier introuvable")
-    return FileResponse(path)
-
-
-@router.post("/anonymize", response_model=IngestResponse)
-def anonymize_and_optionally_predict(
-    request: Request,
-    files: List[UploadFile] = File(...),
-    run_inference: bool = Query(False),
-    persist: bool = Query(True),
-    db: Session = Depends(get_db),
-):
-    saved = _save_uploaded_files(files)
-    input_paths = [Path(p) for _, p, _ in saved]
-    out = run_pipeline(input_paths, out_img_dir=IMG_DIR, out_dicom_dir=ANON_DICOM_DIR)
-    new_ids = [img_id for img_id, _, _ in out]
-    ages_map = _read_age_for_ids(new_ids)
-
-    def _file_url(kind: Literal["png", "dicom", "tagged"], filename: str) -> str:
-        return str(request.url_for("ingest_download", kind=kind, filename=quote(filename)))
-
-    processed_items: List[IngestItem] = [
-        IngestItem(original_filename=name, saved_as=path, kind=kind) for (name, path, kind) in saved
-    ]
-
-    id_to_item: Dict[str, IngestItem] = {}
-    for (nid, png_path, dicom_path) in out:
-        age_entry = ages_map.get(nid, {})
-        png_name = os.path.basename(str(png_path))
-        dcm_name = os.path.basename(str(dicom_path)) if dicom_path else None
-        item = IngestItem(
-            original_filename="(generated)",
-            saved_as=str(png_path),
-            kind="photo",
-            anonymized_image_id=nid,
-            anonymized_png=_file_url("png", png_name),
-            anonymized_dicom=_file_url("dicom", dcm_name) if dcm_name else None,
-            age_value=age_entry.get("age"),
-            age_source=age_entry.get("source"),
-        )
-        processed_items.append(item)
-        id_to_item[nid] = item
-
-    pred_count = 0
-    if run_inference:
-        to_persist: List[ImageAnalysis] = []
-        for (nid, png_path, _) in out:
-            local_png_path = str(png_path)
-            res = ml_predict(local_png_path)
-            it = id_to_item.get(nid)
-            if it:
-                it.prediction = PredResult(label=res.label, birads=res.birads, confidence=float(res.confidence))
-            pred_count += 1
-            if overlay_tag is not None:
-                base = os.path.splitext(os.path.basename(local_png_path))[0]
-                try:
-                    tagged = overlay_tag(local_png_path, base, res.label, res.birads, float(res.confidence))
-                    if TAGGED_DIR is not None and tagged and it:
-                        tagged_name = os.path.basename(tagged)
-                        try:
-                            it.prediction.tagged_url = _file_url("tagged", tagged_name)  # type: ignore[attr-defined]
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-            if persist:
-                try:
-                    birads_enum = _map_label_to_birads(res.label)
-                    to_persist.append(
-                        ImageAnalysis(
-                            filename=os.path.basename(local_png_path),
-                            result_class=birads_enum,
-                            confidence=float(res.confidence),
-                            description=f"Pred: {res.label} ({res.birads})",
-                            status=AnalysisStatus.COMPLETED,
-                        )
-                    )
-                except Exception:
-                    pass
-        if persist and to_persist:
-            try:
-                db.bulk_save_objects(to_persist)
-                db.commit()
-            except Exception:
-                db.rollback()
-
-    n_photos = sum(1 for _, _, k in saved if k == "photo")
-    n_dicoms = sum(1 for _, _, k in saved if k == "dicom")
-    counts = {
-        "uploaded_photos": n_photos,
-        "uploaded_dicoms": n_dicoms,
-        "new_anonymized_png": len(out),
-        "predictions_done": pred_count,
+def _safe_roots() -> Dict[str, Path]:
+    roots = {
+        "pgm": DERIVED_IMG_DIR,
+        "dicom": NORMALIZED_DICOM_DIR,
     }
+    if TAGGED_DIR is not None:
+        roots["tagged"] = TAGGED_DIR
+    return roots
 
-    return IngestResponse(processed=processed_items, counts=counts)
+def _safe_resolve(kind: str, filename: str) -> Path:
+    kind = kind.lower()
+    roots = _safe_roots()
+    if kind not in roots:
+        allowed = "', '".join(roots.keys())
+        raise HTTPException(status_code=400, detail=f"kind doit être parmi: '{allowed}'")
+    base = roots[kind]
+    base.mkdir(parents=True, exist_ok=True)
+
+    p = (base / filename).resolve()
+    try:
+        p.relative_to(base.resolve())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Chemin invalide")
+
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Fichier introuvable")
+    return p
+
+def _iter_files(root: Path, pattern: Optional[str] = None) -> Iterable[Path]:
+    if not root.exists():
+        return []
+    if pattern:
+        yield from root.glob(pattern)
+    else:
+        yield from root.glob("*")
+
+def _dicom_to_png_bytes(dcm_path: Path) -> bytes:
+    """Convertit DICOM en PNG (bytes) pour preview"""
+    if not _HAS_DICOM_PREVIEW:
+        raise HTTPException(status_code=501, detail="pydicom/opencv non disponible")
+    
+    ds = pydicom.dcmread(str(dcm_path))
+    arr = ds.pixel_array.astype("float32")
+    
+    # Normalisation
+    arr = 255 * (arr - arr.min()) / (arr.max() - arr.min() + 1e-6)
+    arr = arr.clip(0, 255).astype("uint8")
+    
+    # Encoder en PNG
+    success, buffer = cv2.imencode('.png', arr)
+    if not success:
+        raise HTTPException(status_code=500, detail="Erreur conversion PNG")
+    
+    return buffer.tobytes()
+
+@router.get("/files", response_model=List[FileItem])
+def list_files(
+    kind: Optional[str] = Query(None, description="pgm | dicom | tagged (si None → tous disponibles)"),
+    q: Optional[str] = Query(None, description="pattern glob ex: '*.png' ou 'bfa0*.png'"),
+    limit: int = Query(200, ge=1, le=5000),
+    order: str = Query("desc", regex="^(asc|desc)$", description="tri par date de modification"),
+):
+    items: List[FileItem] = []
+    roots = _safe_roots()
+
+    if kind is not None:
+        kind = kind.lower()
+        if kind not in roots:
+            allowed = "', '".join(roots.keys())
+            raise HTTPException(status_code=400, detail=f"kind doit être parmi: '{allowed}'")
+        kinds = [kind]
+    else:
+        kinds = list(roots.keys())
+
+    for k in kinds:
+        root = roots[k]
+        files = list(_iter_files(root, q))
+        for f in files:
+            if f.is_file():
+                stat = f.stat()
+                items.append(FileItem(
+                    kind=k,
+                    filename=f.name,
+                    size_bytes=stat.st_size,
+                    created_at=stat.st_mtime,
+                    download_url=f"/api/v1/ingest/download/{k}/{f.name}",
+                ))
+
+    items.sort(key=lambda x: x.created_at, reverse=(order == "desc"))
+    return items[:limit]
+
+@router.get("/preview/{kind}/{filename}")
+def preview_file(kind: str, filename: str):
+    """Retourne une image PNG pour preview (convertit DICOM si nécessaire)"""
+    p = _safe_resolve(kind, filename)
+    kind = kind.lower()
+    
+    if kind == "dicom":
+        # Convertir DICOM en PNG à la volée
+        png_bytes = _dicom_to_png_bytes(p)
+        return Response(content=png_bytes, media_type="image/png")
+    
+    elif kind == "pgm" or kind == "tagged":
+        # Retourner directement l'image
+        return FileResponse(path=str(p), media_type="image/png")
+    
+    else:
+        raise HTTPException(status_code=400, detail="Preview non supporté pour ce type")
+
+@router.get("/download/{kind}/{filename}")
+def download_file(kind: str, filename: str):
+    p = _safe_resolve(kind, filename)
+    kind = kind.lower()
+    if kind == "pgm" or (kind == "tagged" and p.suffix.lower() == ".png"):
+        media_type = "image/png"
+    elif kind == "dicom":
+        media_type = "application/dicom"
+    else:
+        media_type = "application/octet-stream"
+    return FileResponse(path=str(p), media_type=media_type, filename=p.name)
+
+@router.post("/upload", response_model=FileItem)
+async def upload_file(
+    file: UploadFile = File(...),
+    kind: str = Query("pgm", description="pgm | dicom"),
+):
+    kind = kind.lower()
+    roots = _safe_roots()
+    
+    if kind not in ["pgm", "dicom"]:
+        raise HTTPException(status_code=400, detail="kind doit être 'pgm' ou 'dicom'")
+    
+    if kind == "pgm":
+        if not any(file.filename.lower().endswith(ext) for ext in [".png", ".pgm", ".jpg", ".jpeg"]):
+            raise HTTPException(status_code=400, detail="Format PGM: .png, .pgm, .jpg, .jpeg autorisés")
+    elif kind == "dicom":
+        if not file.filename.lower().endswith((".dcm", ".dicom")):
+            raise HTTPException(status_code=400, detail="Format DICOM: .dcm, .dicom autorisés")
+    
+    root = roots[kind]
+    root.mkdir(parents=True, exist_ok=True)
+    
+    ext = Path(file.filename).suffix
+    base_name = Path(file.filename).stem
+    final_name = f"{base_name}_{uuid.uuid4().hex[:8]}{ext}"
+    dest_path = root / final_name
+    
+    with open(dest_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    
+    stat = dest_path.stat()
+    return FileItem(
+        kind=kind,
+        filename=final_name,
+        size_bytes=stat.st_size,
+        created_at=stat.st_mtime,
+        download_url=f"/api/v1/ingest/download/{kind}/{final_name}",
+    )
+
+@router.post("/upload-batch", response_model=List[FileItem])
+async def upload_files_batch(
+    files: List[UploadFile] = File(...),
+    kind: str = Query("pgm", description="pgm | dicom"),
+):
+    kind = kind.lower()
+    roots = _safe_roots()
+    
+    if kind not in ["pgm", "dicom"]:
+        raise HTTPException(status_code=400, detail="kind doit être 'pgm' ou 'dicom'")
+    
+    root = roots[kind]
+    root.mkdir(parents=True, exist_ok=True)
+    
+    results: List[FileItem] = []
+    
+    for file in files:
+        if kind == "pgm":
+            if not any(file.filename.lower().endswith(ext) for ext in [".png", ".pgm", ".jpg", ".jpeg"]):
+                continue
+        elif kind == "dicom":
+            if not file.filename.lower().endswith((".dcm", ".dicom")):
+                continue
+        
+        ext = Path(file.filename).suffix
+        base_name = Path(file.filename).stem
+        final_name = f"{base_name}_{uuid.uuid4().hex[:8]}{ext}"
+        dest_path = root / final_name
+        
+        with open(dest_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        
+        stat = dest_path.stat()
+        results.append(FileItem(
+            kind=kind,
+            filename=final_name,
+            size_bytes=stat.st_size,
+            created_at=stat.st_mtime,
+            download_url=f"/api/v1/ingest/download/{kind}/{final_name}",
+        ))
+    
+    if not results:
+        raise HTTPException(status_code=400, detail="Aucun fichier valide uploadé")
+    
+    return results
+
+@router.post("/export/zip")
+def export_zip(
+    filenames: Optional[List[str]] = Query(None),
+    kind: str = Query("pgm", description="pgm | dicom | tagged"),
+    all_files: bool = Query(False),
+):
+    roots = _safe_roots()
+    kind = kind.lower()
+    root = roots.get(kind)
+    if root is None:
+        allowed = "', '".join(roots.keys())
+        raise HTTPException(status_code=400, detail=f"kind doit être parmi: '{allowed}'")
+    root.mkdir(parents=True, exist_ok=True)
+
+    to_zip: List[Path] = []
+    if all_files:
+        to_zip = [p for p in root.glob("*") if p.is_file()]
+    else:
+        if not filenames:
+            raise HTTPException(status_code=400, detail="fournir 'filenames' ou bien 'all_files=true'")
+        for name in filenames:
+            p = _safe_resolve(kind, name)
+            to_zip.append(p)
+
+    if not to_zip:
+        raise HTTPException(status_code=404, detail="Aucun fichier à zipper")
+
+    def stream():
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for pth in to_zip:
+                zf.write(pth, arcname=pth.name)
+        buf.seek(0)
+        while True:
+            chunk = buf.read(1024 * 256)
+            if not chunk:
+                break
+            yield chunk
+        buf.close()
+
+    ts = int(time.time())
+    fname = f"export_{kind}_{ts}.zip"
+    headers = {"Content-Disposition": f'attachment; filename="{fname}"'}
+    return StreamingResponse(stream(), media_type="application/zip", headers=headers)
+
+@router.delete("/delete/{kind}/{filename}")
+def delete_file(kind: str, filename: str):
+    p = _safe_resolve(kind, filename)
+    try:
+        p.unlink()
+        return {"message": f"Fichier {filename} supprimé", "kind": kind, "filename": filename}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
