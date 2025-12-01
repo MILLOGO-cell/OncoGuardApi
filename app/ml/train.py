@@ -14,6 +14,7 @@ from joblib import dump
 from app.core.config import MIAS_DATA_DIR
 
 
+
 def augment_image(image):
     # Trois versions : originale, retournée, tournée
     flipped = cv2.flip(image, 1)

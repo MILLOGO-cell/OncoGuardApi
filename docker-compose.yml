@@ -1,17 +1,13 @@
-version: '3.9'
 
 services:
-  db:
-    image: postgres:15
+  backend:
+    build: .
+    container_name: onco-backend
     restart: always
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: onco_db
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
     ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-volumes:
-  postgres_data:
+      - "8000:8000"
