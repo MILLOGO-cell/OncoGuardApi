@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 from app.db.database import get_db
 from app.ml.predictor import predict
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -21,6 +22,17 @@ SUPPORTED_CONTENT_TYPES = {
     "application/dicom": ".dcm",
     "image/x-portable-graymap": ".pgm",
     "application/octet-stream": None,
+}
+
+ROOT_DIR = Path(__file__).resolve().parents[3]
+TAGGED_DIR = ROOT_DIR / "tagged"
+TAGGED_DIR.mkdir(parents=True, exist_ok=True)
+
+LABEL_COLORS = {
+    "normal": (0, 220, 0),
+    "benign": (0, 170, 255),
+    "malignant": (38, 38, 220),
+    "default": (128, 128, 128)
 }
 
 
@@ -44,12 +56,9 @@ def convert_medical_image_to_grayscale(file_path: str) -> np.ndarray:
             return img_array
             
         except ImportError:
-            raise ValueError(
-                "pydicom n'est pas installé. "
-                "Installez-le avec: pip install pydicom"
-            )
+            raise ValueError("pydicom n'est pas installé")
         except Exception as e:
-            raise ValueError(f"Erreur lors de la lecture du fichier DICOM : {str(e)}")
+            raise ValueError(f"Erreur lecture DICOM : {str(e)}")
     
     elif ext in ['.pgm', '.jpg', '.jpeg', '.png']:
         img = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
@@ -60,10 +69,51 @@ def convert_medical_image_to_grayscale(file_path: str) -> np.ndarray:
         return img
     
     else:
-        raise ValueError(
-            f"Extension non supportée : {ext}. "
-            f"Formats acceptés : .dcm, .pgm, .jpg, .jpeg, .png"
-        )
+        raise ValueError(f"Extension non supportée : {ext}")
+
+
+def create_tagged_image(
+    src_path: str,
+    base_filename: str,
+    label: str,
+    birads: str,
+    confidence: float
+) -> str:
+    img = cv2.imread(src_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise ValueError(f"Impossible de lire l'image : {src_path}")
+    
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    
+    txt = f"{label.upper()} • {birads} • {confidence * 100:.1f}%"
+    
+    label_lower = label.lower().strip()
+    color = LABEL_COLORS.get(label_lower, LABEL_COLORS["default"])
+    
+    pad_y = 8
+    bar_h = 36 + pad_y * 2
+    
+    cv2.rectangle(img_rgb, (0, 0), (img_rgb.shape[1], bar_h), (0, 0, 0), -1)
+    
+    cv2.putText(
+        img_rgb,
+        txt,
+        (12, 28 + pad_y // 2),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        color,
+        2,
+        cv2.LINE_AA
+    )
+    
+    tagged_filename = f"{base_filename}__tag.png"
+    out_path = TAGGED_DIR / tagged_filename
+    
+    if not cv2.imwrite(str(out_path), img_rgb):
+        raise ValueError("Impossible d'écrire l'image annotée")
+    
+    logger.info(f"Image annotée créée : {out_path}")
+    return tagged_filename
 
 
 def _label_to_birads(label: str) -> BiradsCategory:
@@ -97,18 +147,12 @@ def create_and_predict_image_analysis(
         is_valid = True
     elif file_extension in ['.dcm', '.dicom', '.pgm']:
         is_valid = True
-        logger.info(
-            f"Fichier accepté par extension ({file_extension}) "
-            f"malgré content_type={file.content_type}"
-        )
+        logger.info(f"Fichier accepté par extension ({file_extension})")
     
     if not is_valid:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Format de fichier non supporté : {file.content_type} ({file_extension}). "
-                f"Formats acceptés : JPEG, PNG, DICOM (.dcm), PGM (.pgm)"
-            ),
+            detail=f"Format non supporté : {file.content_type} ({file_extension})"
         )
     
     unique_filename = f"{uuid.uuid4()}{file_extension}"
@@ -116,6 +160,7 @@ def create_and_predict_image_analysis(
     os.makedirs("./uploads", exist_ok=True)
     
     temp_png_path = None
+    tagged_filename = None
     
     try:
         with open(file_path, "wb") as buffer:
@@ -125,33 +170,34 @@ def create_and_predict_image_analysis(
         
         if file_extension in ['.dcm', '.dicom', '.pgm']:
             img_gray = convert_medical_image_to_grayscale(file_path)
-            
             temp_png_path = f"./uploads/{uuid.uuid4()}_converted.png"
             cv2.imwrite(temp_png_path, img_gray)
-            
             logger.info(f"Conversion en PNG : {temp_png_path}")
             prediction_path = temp_png_path
         else:
             prediction_path = file_path
         
         prediction = predict(
-            prediction_path, 
+            prediction_path,
             confidence_threshold=confidence_threshold,
             uncertainty_threshold=uncertainty_threshold
         )
         
         birads_category = _label_to_birads(prediction.label)
         
+        base_name = os.path.splitext(unique_filename)[0]
+        tagged_filename = create_tagged_image(
+            prediction_path,
+            base_name,
+            prediction.label,
+            prediction.birads,
+            float(prediction.confidence)
+        )
+        
         if prediction.reclassified_as_normal:
-            logger.info(
-                f"Image {unique_filename} reclassee NORMAL "
-                f"(confiance: {prediction.confidence:.2%})"
-            )
+            logger.info(f"Image {unique_filename} reclassee NORMAL")
         else:
-            logger.info(
-                f"Image {unique_filename} classee {prediction.label.upper()} "
-                f"(confiance: {prediction.confidence:.2%})"
-            )
+            logger.info(f"Image {unique_filename} classee {prediction.label.upper()}")
         
         analysis_db = ImageAnalysisModel(
             filename=unique_filename,
@@ -161,7 +207,8 @@ def create_and_predict_image_analysis(
             description=(
                 f"Format: {file_extension.upper()} | "
                 f"Pred: {prediction.label} ({prediction.birads}) | "
-                f"Model: {prediction.model_type}"
+                f"Model: {prediction.model_type} | "
+                f"Tagged: {tagged_filename}"
                 + (f" | Reclassifie NORMAL" if prediction.reclassified_as_normal else "")
             ),
         )
@@ -170,10 +217,7 @@ def create_and_predict_image_analysis(
         db.commit()
         db.refresh(analysis_db)
         
-        logger.info(
-            f"Analyse enregistree : ID={analysis_db.id}, "
-            f"BI-RADS={birads_category.value}"
-        )
+        logger.info(f"Analyse enregistree : ID={analysis_db.id}")
         
         return analysis_db
     
@@ -185,7 +229,7 @@ def create_and_predict_image_analysis(
         logger.exception(f"Erreur lors de l'analyse de {unique_filename}")
         raise HTTPException(
             status_code=500,
-            detail=f"Erreur lors de l'analyse de l'image : {str(e)}"
+            detail=f"Erreur lors de l'analyse : {str(e)}"
         )
     
     finally:
@@ -195,3 +239,13 @@ def create_and_predict_image_analysis(
                 logger.info(f"Fichier temporaire supprime : {temp_png_path}")
             except Exception as e:
                 logger.warning(f"Impossible de supprimer {temp_png_path}: {e}")
+
+
+@router.get("/tagged/{filename}")
+def download_tagged_image(filename: str):
+    p = TAGGED_DIR / filename
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"Image introuvable : {filename}")
+    
+    from fastapi.responses import FileResponse
+    return FileResponse(str(p), media_type="image/png", filename=filename)
