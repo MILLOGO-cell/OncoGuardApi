@@ -15,6 +15,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from app.ingest.config import DERIVED_IMG_DIR, NORMALIZED_DICOM_DIR
 from app.api.v1.schemas.files import FileItem
 
+import cv2
+import numpy as np
+from fastapi.responses import Response
+
 logger = logging.getLogger(__name__)
 
 # Import robuste du dossier tagged
@@ -420,3 +424,60 @@ def delete_file(
         "failed": failed,
         "total_deleted": len(deleted)
     }
+    
+@router.get("/preview/{kind}/{filename}")
+def preview_file(kind: str, filename: str):
+    """
+    Retourne toujours un PNG pour aperçu (conversion à la volée si nécessaire).
+    """
+    p = _safe_resolve(kind, filename)
+    kind = kind.lower()
+    ext = p.suffix.lower()
+    
+    # PNG: retour direct
+    if ext == ".png":
+        with open(p, "rb") as f:
+            return Response(content=f.read(), media_type="image/png")
+    
+    # DICOM: conversion à la volée
+    if ext in [".dcm", ".dicom"]:
+        try:
+            import pydicom
+            dcm = pydicom.dcmread(p)
+            img_array = dcm.pixel_array.astype(np.float32)
+            
+            # Normalisation
+            img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min())
+            img_array = (img_array * 255).astype(np.uint8)
+            
+            if len(img_array.shape) == 3:
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            
+            # Encodage PNG en mémoire
+            success, buffer = cv2.imencode('.png', img_array)
+            if not success:
+                raise ValueError("Échec encodage PNG")
+            
+            return Response(content=buffer.tobytes(), media_type="image/png")
+        except Exception as e:
+            logger.exception("Erreur conversion DICOM → PNG")
+            raise HTTPException(status_code=500, detail=f"Conversion DICOM échouée: {e}")
+    
+    # PGM: conversion à la volée
+    if ext == ".pgm":
+        try:
+            img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                raise ValueError("Impossible de lire le PGM")
+            
+            # Encodage PNG en mémoire
+            success, buffer = cv2.imencode('.png', img)
+            if not success:
+                raise ValueError("Échec encodage PNG")
+            
+            return Response(content=buffer.tobytes(), media_type="image/png")
+        except Exception as e:
+            logger.exception("Erreur conversion PGM → PNG")
+            raise HTTPException(status_code=500, detail=f"Conversion PGM échouée: {e}")
+    
+    raise HTTPException(status_code=400, detail=f"Type de fichier non supporté: {ext}")
