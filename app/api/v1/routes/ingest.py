@@ -481,3 +481,98 @@ def preview_file(kind: str, filename: str):
             raise HTTPException(status_code=500, detail=f"Conversion PGM échouée: {e}")
     
     raise HTTPException(status_code=400, detail=f"Type de fichier non supporté: {ext}")
+
+
+@router.delete("/delete-batch")
+def delete_files_batch(
+    kind: str = Query(..., description="Type de fichiers : 'png', 'dicom', 'tagged'"),
+    filenames: List[str] = Query(..., description="Liste des noms de fichiers à supprimer"),
+    delete_related: bool = Query(
+        False,
+        description="Si true, supprime aussi les fichiers tagged associés (pour PNG/DICOM)"
+    )
+):
+    """
+    Supprime plusieurs fichiers en une seule requête.
+    
+    Args:
+        kind: Type de fichiers ("png", "dicom", "tagged")
+        filenames: Liste des noms de fichiers à supprimer
+        delete_related: Si True, supprime aussi les fichiers tagged associés
+    
+    Returns:
+        dict: Résultat de la suppression avec statistiques
+    
+    Example:
+        DELETE /api/v1/ingest/delete-batch?kind=png&filenames=img1.png&filenames=img2.png&delete_related=true
+    """
+    if not filenames:
+        raise HTTPException(
+            status_code=400,
+            detail="La liste 'filenames' ne peut pas être vide"
+        )
+    
+    deleted = []
+    failed = []
+    
+    # Supprimer chaque fichier
+    for filename in filenames:
+        try:
+            # Résoudre le chemin du fichier principal
+            p = _safe_resolve(kind, filename)
+            
+            # Supprimer le fichier principal
+            try:
+                p.unlink()
+                deleted.append(filename)
+                logger.info(f"Fichier supprimé : {kind}/{filename}")
+            except Exception as e:
+                failed.append({
+                    "filename": filename,
+                    "reason": f"Erreur suppression : {str(e)}"
+                })
+                logger.warning(f"Échec suppression {kind}/{filename}: {e}")
+                continue
+            
+            # Supprimer le fichier tagged associé si demandé
+            if delete_related and TAGGED_DIR is not None and kind in ("png", "dicom"):
+                base_name = p.stem
+                tagged_name = f"{base_name}__tag.png"
+                tagged_path = TAGGED_DIR / tagged_name
+                
+                if tagged_path.exists():
+                    try:
+                        tagged_path.unlink()
+                        deleted.append(f"tagged/{tagged_name}")
+                        logger.info(f"Fichier tagged associé supprimé : {tagged_name}")
+                    except Exception as e:
+                        failed.append({
+                            "filename": f"tagged/{tagged_name}",
+                            "reason": f"Erreur suppression tagged : {str(e)}"
+                        })
+                        logger.warning(f"Impossible de supprimer le tagged : {e}")
+        
+        except HTTPException as he:
+            # Fichier non trouvé ou invalide
+            failed.append({
+                "filename": filename,
+                "reason": he.detail
+            })
+            logger.warning(f"Échec résolution {kind}/{filename}: {he.detail}")
+        
+        except Exception as e:
+            failed.append({
+                "filename": filename,
+                "reason": f"Erreur inattendue : {str(e)}"
+            })
+            logger.exception(f"Erreur inattendue pour {kind}/{filename}")
+    
+    logger.info(f"Suppression batch : {len(deleted)} réussis, {len(failed)} échecs")
+    
+    return {
+        "deleted": deleted,
+        "failed": failed,
+        "total_deleted": len(deleted),
+        "total_failed": len(failed),
+        "total_requested": len(filenames)
+    }
